@@ -21,9 +21,13 @@ use crate::wasm_executor::WasmExecutor;
 use log::{trace, warn};
 use codec::Decode;
 use parity_wasm::elements::{deserialize_buffer, DataSegment, Instruction, Module as RawModule};
-use primitives::{storage::well_known_keys, Blake2Hasher, traits::Externalities};
+use primitives::storage::well_known_keys;
+use primitives::Blake2Hasher;
 use runtime_version::RuntimeVersion;
-use std::{collections::hash_map::{Entry, HashMap}, mem, rc::Rc};
+use state_machine::Externalities;
+use std::collections::hash_map::{Entry, HashMap};
+use std::mem;
+use std::rc::Rc;
 use wasmi::{Module as WasmModule, ModuleRef as WasmModuleInstanceRef, RuntimeValue};
 
 #[derive(Debug)]
@@ -278,11 +282,7 @@ impl RuntimesCache {
 			},
 			Entry::Vacant(v) => {
 				trace!(target: "runtimes_cache", "no instance found in cache, creating now.");
-				let result = Self::create_wasm_instance(
-					wasm_executor,
-					ext,
-					heap_pages,
-				);
+				let result = Self::create_wasm_instance(wasm_executor, ext, heap_pages);
 				if let Err(ref err) = result {
 					warn!(target: "runtimes_cache", "cannot create a runtime: {:?}", err);
 				}
@@ -305,10 +305,10 @@ impl RuntimesCache {
 		//
 		// A return of this error actually indicates that there is a problem in logic, since
 		// we just loaded and validated the `module` above.
-		let data_segments = extract_data_segments(&code)?;
+		let data_segments = extract_data_segments(&code).ok_or(CacheError::CantDeserializeWasm)?;
 
 		// Instantiate this module.
-		let instance = WasmExecutor::instantiate_module(heap_pages as usize, &module)
+		let instance = WasmExecutor::instantiate_module::<E>(heap_pages as usize, &module)
 			.map_err(CacheError::Instantiation)?;
 
 		// Take state snapshot before executing anything.
@@ -335,14 +335,12 @@ impl RuntimesCache {
 /// Extract the data segments from the given wasm code.
 ///
 /// Returns `Err` if the given wasm code cannot be deserialized.
-fn extract_data_segments(wasm_code: &[u8]) -> Result<Vec<DataSegment>, CacheError> {
-	let raw_module: RawModule = deserialize_buffer(wasm_code)
-		.map_err(|_| CacheError::CantDeserializeWasm)?;
-
+fn extract_data_segments(wasm_code: &[u8]) -> Option<Vec<DataSegment>> {
+	let raw_module: RawModule = deserialize_buffer(wasm_code).ok()?;
 	let segments = raw_module
 		.data_section()
 		.map(|ds| ds.entries())
 		.unwrap_or(&[])
 		.to_vec();
-	Ok(segments)
+	Some(segments)
 }

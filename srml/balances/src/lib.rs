@@ -106,7 +106,7 @@
 //! The Contract module uses the `Currency` trait to handle gas payment, and its types inherit from `Currency`:
 //!
 //! ```
-//! use support::traits::Currency;
+//! use srml_support::traits::Currency;
 //! # pub trait Trait: system::Trait {
 //! # 	type Currency: Currency<Self::AccountId>;
 //! # }
@@ -120,14 +120,14 @@
 //! The Staking module uses the `LockableCurrency` trait to lock a stash account's funds:
 //!
 //! ```
-//! use support::traits::{WithdrawReasons, LockableCurrency};
+//! use srml_support::traits::{WithdrawReasons, LockableCurrency};
 //! use sr_primitives::traits::Bounded;
 //! pub trait Trait: system::Trait {
 //! 	type Currency: LockableCurrency<Self::AccountId, Moment=Self::BlockNumber>;
 //! }
 //! # struct StakingLedger<T: Trait> {
 //! # 	stash: <T as system::Trait>::AccountId,
-//! # 	total: <<T as Trait>::Currency as support::traits::Currency<<T as system::Trait>::AccountId>>::Balance,
+//! # 	total: <<T as Trait>::Currency as srml_support::traits::Currency<<T as system::Trait>::AccountId>>::Balance,
 //! # 	phantom: std::marker::PhantomData<T>,
 //! # }
 //! # const STAKING_ID: [u8; 8] = *b"staking ";
@@ -161,26 +161,19 @@
 use rstd::prelude::*;
 use rstd::{cmp, result, mem};
 use codec::{Codec, Encode, Decode};
-use support::{
-	StorageValue, StorageMap, Parameter, decl_event, decl_storage, decl_module,
-	traits::{
-		UpdateBalanceOutcome, Currency, OnFreeBalanceZero, OnUnbalanced,
-		WithdrawReason, WithdrawReasons, LockIdentifier, LockableCurrency, ExistenceRequirement,
-		Imbalance, SignedImbalance, ReservableCurrency, Get,
-	},
-	dispatch::Result,
+use srml_support::{StorageValue, StorageMap, Parameter, decl_event, decl_storage, decl_module};
+use srml_support::traits::{
+	UpdateBalanceOutcome, Currency, OnFreeBalanceZero, OnUnbalanced,
+	WithdrawReason, WithdrawReasons, LockIdentifier, LockableCurrency, ExistenceRequirement,
+	Imbalance, SignedImbalance, ReservableCurrency, Get,
 };
-use sr_primitives::{
-	transaction_validity::{
-		TransactionPriority, ValidTransaction, InvalidTransaction, TransactionValidityError,
-		TransactionValidity,
-	},
-	traits::{
-		Zero, SimpleArithmetic, StaticLookup, Member, CheckedAdd, CheckedSub, MaybeSerializeDebug,
-		Saturating, Bounded, SignedExtension, SaturatedConversion, Convert,
-	},
-	weights::{DispatchInfo, SimpleDispatchInfo, Weight},
+use srml_support::dispatch::Result;
+use sr_primitives::traits::{
+	Zero, SimpleArithmetic, StaticLookup, Member, CheckedAdd, CheckedSub, MaybeSerializeDebug,
+	Saturating, Bounded, SignedExtension, SaturatedConversion, DispatchError, Convert,
 };
+use sr_primitives::transaction_validity::{TransactionPriority, ValidTransaction};
+use sr_primitives::weights::{DispatchInfo, SimpleDispatchInfo, Weight};
 use system::{IsDeadAccount, OnNewAccount, ensure_signed, ensure_root};
 
 mod mock;
@@ -420,7 +413,7 @@ decl_module! {
 		/// The fee to be paid for making a transaction; the per-byte portion.
 		const TransactionByteFee: T::Balance = T::TransactionByteFee::get();
 
-		fn deposit_event() = default;
+		fn deposit_event<T, I>() = default;
 
 		/// Transfer some liquid free balance to another account.
 		///
@@ -1194,6 +1187,7 @@ pub struct TakeFees<T: Trait<I>, I: Instance = DefaultInstance>(#[codec(compact)
 
 impl<T: Trait<I>, I: Instance> TakeFees<T, I> {
 	/// utility constructor. Used only in client/factory code.
+	#[cfg(feature = "std")]
 	pub fn from(fee: T::Balance) -> Self {
 		Self(fee)
 	}
@@ -1242,7 +1236,7 @@ impl<T: Trait<I>, I: Instance + Clone + Eq> SignedExtension for TakeFees<T, I> {
 	type Call = T::Call;
 	type AdditionalSigned = ();
 	type Pre = ();
-	fn additional_signed(&self) -> rstd::result::Result<(), TransactionValidityError> { Ok(()) }
+	fn additional_signed(&self) -> rstd::result::Result<(), &'static str> { Ok(()) }
 
 	fn validate(
 		&self,
@@ -1250,18 +1244,15 @@ impl<T: Trait<I>, I: Instance + Clone + Eq> SignedExtension for TakeFees<T, I> {
 		_call: &Self::Call,
 		info: DispatchInfo,
 		len: usize,
-	) -> TransactionValidity {
+	) -> rstd::result::Result<ValidTransaction, DispatchError> {
 		// pay any fees.
 		let fee = Self::compute_fee(len, info, self.0);
-		let imbalance = match <Module<T, I>>::withdraw(
+		let imbalance = <Module<T, I>>::withdraw(
 			who,
 			fee,
 			WithdrawReason::TransactionPayment,
 			ExistenceRequirement::KeepAlive,
-		) {
-			Ok(imbalance) => imbalance,
-			Err(_) => return InvalidTransaction::Payment.into(),
-		};
+		).map_err(|_| DispatchError::Payment)?;
 		T::TransactionPayment::on_unbalanced(imbalance);
 
 		let mut r = ValidTransaction::default();

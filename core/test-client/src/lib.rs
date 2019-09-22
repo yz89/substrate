@@ -47,6 +47,7 @@ use client::LocalCallExecutor;
 /// Test client light database backend.
 pub type LightBackend<Block> = client::light::backend::Backend<
 	client_db::light::LightStorage<Block>,
+	LightFetcher,
 	Blake2Hasher,
 >;
 
@@ -98,11 +99,6 @@ impl<Block, Executor, G: GenesisInit> TestClientBuilder<
 	pub fn with_default_backend() -> Self {
 		let backend = Arc::new(Backend::new_test(std::u32::MAX, std::u64::MAX));
 		Self::with_backend(backend)
-	}
-
-	/// Give access to the underlying backend of these clients
-	pub fn backend(&self) -> Arc<Backend<Block>> {
-		self.backend.clone()
 	}
 }
 

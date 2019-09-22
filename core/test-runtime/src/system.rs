@@ -18,18 +18,18 @@
 //! and depositing logs.
 
 use rstd::prelude::*;
-use runtime_io::{storage_root, storage_changes_root, twox_128, blake2_256};
+use runtime_io::{storage_root, ordered_trie_root, storage_changes_root, twox_128, blake2_256};
 use runtime_support::storage::{self, StorageValue, StorageMap};
 use runtime_support::storage_items;
-use sr_primitives::{
-	traits::{Hash as HashT, BlakeTwo256, Header as _}, generic, ApplyError, ApplyResult,
-	transaction_validity::{TransactionValidity, ValidTransaction, InvalidTransaction},
-};
+use sr_primitives::traits::{Hash as HashT, BlakeTwo256, Header as _};
+use sr_primitives::generic;
+use sr_primitives::{ApplyError, ApplyOutcome, ApplyResult};
+use sr_primitives::transaction_validity::{TransactionValidity, ValidTransaction};
 use codec::{KeyedVec, Encode};
-use crate::{
+use super::{
 	AccountId, BlockNumber, Extrinsic, Transfer, H256 as Hash, Block, Header, Digest, AuthorityId
 };
-use primitives::storage::well_known_keys;
+use primitives::{Blake2Hasher, storage::well_known_keys};
 
 const NONCE_OF: &[u8] = b"nonce:";
 const BALANCE_OF: &[u8] = b"balance:";
@@ -101,7 +101,8 @@ fn execute_block_with_state_root_handler(
 
 	// check transaction trie root represents the transactions.
 	let txs = block.extrinsics.iter().map(Encode::encode).collect::<Vec<_>>();
-	let txs_root = BlakeTwo256::ordered_trie_root(txs);
+	let txs = txs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+	let txs_root = ordered_trie_root::<Blake2Hasher, _, _>(&txs).into();
 	info_expect_equal_hash(&txs_root, &header.extrinsics_root);
 	if let Mode::Overwrite = mode {
 		header.extrinsics_root = txs_root;
@@ -118,7 +119,7 @@ fn execute_block_with_state_root_handler(
 	// execute transactions
 	block.extrinsics.iter().enumerate().for_each(|(i, e)| {
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &(i as u32));
-		let _ = execute_transaction_backend(e).unwrap_or_else(|_| panic!("Invalid transaction"));
+		execute_transaction_backend(e).unwrap_or_else(|_| panic!("Invalid transaction"));
 		storage::unhashed::kill(well_known_keys::EXTRINSIC_INDEX);
 	});
 
@@ -157,17 +158,17 @@ impl executive::ExecuteBlock<Block> for BlockExecutor {
 /// This doesn't attempt to validate anything regarding the block.
 pub fn validate_transaction(utx: Extrinsic) -> TransactionValidity {
 	if check_signature(&utx).is_err() {
-		return InvalidTransaction::BadProof.into();
+		return TransactionValidity::Invalid(ApplyError::BadSignature as i8);
 	}
 
 	let tx = utx.transfer();
 	let nonce_key = tx.from.to_keyed_vec(NONCE_OF);
 	let expected_nonce: u64 = storage::hashed::get_or(&blake2_256, &nonce_key, 0);
 	if tx.nonce < expected_nonce {
-		return InvalidTransaction::Stale.into();
+		return TransactionValidity::Invalid(ApplyError::Stale as i8);
 	}
 	if tx.nonce > expected_nonce + 64 {
-		return InvalidTransaction::Future.into();
+		return TransactionValidity::Unknown(ApplyError::Future as i8);
 	}
 
 	let hash = |from: &AccountId, nonce: u64| {
@@ -187,7 +188,7 @@ pub fn validate_transaction(utx: Extrinsic) -> TransactionValidity {
 		p
 	};
 
-	Ok(ValidTransaction {
+	TransactionValidity::Valid(ValidTransaction {
 		priority: tx.amount,
 		requires,
 		provides,
@@ -210,7 +211,8 @@ pub fn execute_transaction(utx: Extrinsic) -> ApplyResult {
 pub fn finalize_block() -> Header {
 	let extrinsic_index: u32 = storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap();
 	let txs: Vec<_> = (0..extrinsic_index).map(ExtrinsicData::take).collect();
-	let extrinsics_root = BlakeTwo256::ordered_trie_root(txs).into();
+	let txs = txs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+	let extrinsics_root = ordered_trie_root::<Blake2Hasher, _, _>(&txs).into();
 	let number = <Number>::take().expect("Number is set by `initialize_block`");
 	let parent_hash = <ParentHash>::take();
 	let mut digest = <StorageDigest>::take().expect("StorageDigest is set by `initialize_block`");
@@ -242,7 +244,8 @@ pub fn finalize_block() -> Header {
 #[inline(always)]
 fn check_signature(utx: &Extrinsic) -> Result<(), ApplyError> {
 	use sr_primitives::traits::BlindCheckable;
-	utx.clone().check().map_err(|_| InvalidTransaction::BadProof.into()).map(|_| ())
+	utx.clone().check().map_err(|_| ApplyError::BadSignature)?;
+	Ok(())
 }
 
 fn execute_transaction_backend(utx: &Extrinsic) -> ApplyResult {
@@ -250,7 +253,7 @@ fn execute_transaction_backend(utx: &Extrinsic) -> ApplyResult {
 	match utx {
 		Extrinsic::Transfer(ref transfer, _) => execute_transfer_backend(transfer),
 		Extrinsic::AuthoritiesChange(ref new_auth) => execute_new_authorities_backend(new_auth),
-		Extrinsic::IncludeData(_) => Ok(Ok(())),
+		Extrinsic::IncludeData(_) => Ok(ApplyOutcome::Success),
 		Extrinsic::StorageChange(key, value) => execute_storage_change(key, value.as_ref().map(|v| &**v)),
 	}
 }
@@ -260,7 +263,7 @@ fn execute_transfer_backend(tx: &Transfer) -> ApplyResult {
 	let nonce_key = tx.from.to_keyed_vec(NONCE_OF);
 	let expected_nonce: u64 = storage::hashed::get_or(&blake2_256, &nonce_key, 0);
 	if !(tx.nonce == expected_nonce) {
-		return Err(InvalidTransaction::Stale.into());
+		return Err(ApplyError::Stale)
 	}
 
 	// increment nonce in storage
@@ -272,18 +275,18 @@ fn execute_transfer_backend(tx: &Transfer) -> ApplyResult {
 
 	// enact transfer
 	if !(tx.amount <= from_balance) {
-		return Err(InvalidTransaction::Payment.into());
+		return Err(ApplyError::CantPay)
 	}
 	let to_balance_key = tx.to.to_keyed_vec(BALANCE_OF);
 	let to_balance: u64 = storage::hashed::get_or(&blake2_256, &to_balance_key, 0);
 	storage::hashed::put(&blake2_256, &from_balance_key, &(from_balance - tx.amount));
 	storage::hashed::put(&blake2_256, &to_balance_key, &(to_balance + tx.amount));
-	Ok(Ok(()))
+	Ok(ApplyOutcome::Success)
 }
 
 fn execute_new_authorities_backend(new_authorities: &[AuthorityId]) -> ApplyResult {
 	NewAuthorities::put(new_authorities.to_vec());
-	Ok(Ok(()))
+	Ok(ApplyOutcome::Success)
 }
 
 fn execute_storage_change(key: &[u8], value: Option<&[u8]>) -> ApplyResult {
@@ -291,7 +294,7 @@ fn execute_storage_change(key: &[u8], value: Option<&[u8]>) -> ApplyResult {
 		Some(value) => storage::unhashed::put_raw(key, value),
 		None => storage::unhashed::kill(key),
 	}
-	Ok(Ok(()))
+	Ok(ApplyOutcome::Success)
 }
 
 #[cfg(feature = "std")]
@@ -301,7 +304,7 @@ fn info_expect_equal_hash(given: &Hash, expected: &Hash) {
 		println!(
 			"Hash: given={}, expected={}",
 			HexDisplay::from(given.as_fixed_bytes()),
-			HexDisplay::from(expected.as_fixed_bytes()),
+			HexDisplay::from(expected.as_fixed_bytes())
 		);
 	}
 }
@@ -309,9 +312,9 @@ fn info_expect_equal_hash(given: &Hash, expected: &Hash) {
 #[cfg(not(feature = "std"))]
 fn info_expect_equal_hash(given: &Hash, expected: &Hash) {
 	if given != expected {
-		sr_primitives::print("Hash not equal");
-		sr_primitives::print(given.as_bytes());
-		sr_primitives::print(expected.as_bytes());
+		::runtime_io::print("Hash not equal");
+		::runtime_io::print(given.as_bytes());
+		::runtime_io::print(expected.as_bytes());
 	}
 }
 

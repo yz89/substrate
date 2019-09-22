@@ -472,7 +472,6 @@ mod tests {
 				origin: BlockOrigin::File,
 				header,
 				is_new_best: false,
-				retracted: vec![],
 			}).unwrap();
 		}
 	}

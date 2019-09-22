@@ -131,7 +131,9 @@ impl Error {
 	}
 
 	/// Chain a state error.
-	pub fn from_state(e: Box<dyn state_machine::Error>) -> Self {
+	pub fn from_state(e: Box<dyn state_machine::Error + Send>) -> Self {
 		Error::Execution(e)
 	}
 }
+
+impl state_machine::Error for Error {}

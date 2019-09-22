@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use client::{CallExecutor, Client};
 use client::backend::Backend;
+use client::blockchain::HeaderBackend;
 use client::error::Error as ClientError;
 use codec::{Encode, Decode};
 use grandpa::voter_set::VoterSet;
@@ -70,7 +71,8 @@ impl<Block: BlockT<Hash=H256>> GrandpaJustification<Block> {
 			loop {
 				if current_hash == commit.target_hash { break; }
 
-				match client.header(&BlockId::Hash(current_hash))? {
+				#[allow(deprecated)]
+				match client.backend().blockchain().header(BlockId::Hash(current_hash))? {
 					Some(current_header) => {
 						if *current_header.number() <= commit.target_number {
 							return error();

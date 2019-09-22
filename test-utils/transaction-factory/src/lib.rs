@@ -26,19 +26,22 @@ use std::fmt::Display;
 
 use log::info;
 
-use client::{Client, block_builder::api::BlockBuilder, runtime_api::ConstructRuntimeApi};
+use client::block_builder::api::BlockBuilder;
+use client::runtime_api::ConstructRuntimeApi;
 use consensus_common::{
 	BlockOrigin, BlockImportParams, InherentData, ForkChoiceStrategy,
 	SelectChain
 };
 use consensus_common::block_import::BlockImport;
 use codec::{Decode, Encode};
-use primitives::{Blake2Hasher, Hasher};
 use sr_primitives::generic::BlockId;
 use sr_primitives::traits::{
 	Block as BlockT, Header as HeaderT, ProvideRuntimeApi, SimpleArithmetic,
 	One, Zero,
 };
+use substrate_service::{
+	FactoryBlock, FactoryFullConfiguration, FullClient, new_client,
+	ServiceFactory, ComponentClient, FullComponents};
 pub use crate::modes::Mode;
 
 pub mod modes;
@@ -92,19 +95,15 @@ pub trait RuntimeAdapter {
 
 /// Manufactures transactions. The exact amount depends on
 /// `mode`, `num` and `rounds`.
-pub fn factory<RA, Backend, Exec, Block, RtApi, Sc>(
+pub fn factory<F, RA>(
 	mut factory_state: RA,
-	client: &Arc<Client<Backend, Exec, Block, RtApi>>,
-	select_chain: &Sc,
+	mut config: FactoryFullConfiguration<F>,
 ) -> cli::error::Result<()>
 where
-	Block: BlockT<Hash = <Blake2Hasher as Hasher>::Out>,
-	Exec: client::CallExecutor<Block, Blake2Hasher> + Send + Sync + Clone,
-	Backend: client::backend::Backend<Block, Blake2Hasher> + Send,
-	Client<Backend, Exec, Block, RtApi>: ProvideRuntimeApi,
-	<Client<Backend, Exec, Block, RtApi> as ProvideRuntimeApi>::Api: BlockBuilder<Block>,
-	RtApi: ConstructRuntimeApi<Block, Client<Backend, Exec, Block, RtApi>> + Send + Sync,
-	Sc: SelectChain<Block>,
+	F: ServiceFactory,
+	F::RuntimeApi: ConstructRuntimeApi<FactoryBlock<F>, FullClient<F>>,
+	FullClient<F>: ProvideRuntimeApi,
+	<FullClient<F> as ProvideRuntimeApi>::Api: BlockBuilder<FactoryBlock<F>>,
 	RA: RuntimeAdapter,
 	<<RA as RuntimeAdapter>::Block as BlockT>::Hash: From<primitives::H256>,
 {
@@ -113,16 +112,20 @@ where
 		return Err(cli::error::Error::Input(msg));
 	}
 
-	let best_header: Result<<Block as BlockT>::Header, cli::error::Error> =
+	let client = new_client::<F>(&config)?;
+
+	let select_chain = F::build_select_chain(&mut config, client.clone())?;
+
+	let best_header: Result<<F::Block as BlockT>::Header, cli::error::Error> =
 		select_chain.best_chain().map_err(|e| format!("{:?}", e).into());
 	let mut best_hash = best_header?.hash();
-	let mut best_block_id = BlockId::<Block>::hash(best_hash);
+	let best_block_id = BlockId::<F::Block>::hash(best_hash);
 	let version = client.runtime_version_at(&best_block_id)?.spec_version;
 	let genesis_hash = client.block_hash(Zero::zero())?
 		.expect("Genesis block always exists; qed").into();
 
 	while let Some(block) = match factory_state.mode() {
-		Mode::MasterToNToM => complex_mode::next::<RA, _, _, _, _>(
+		Mode::MasterToNToM => complex_mode::next::<F, RA>(
 			&mut factory_state,
 			&client,
 			version,
@@ -130,7 +133,7 @@ where
 			best_hash.into(),
 			best_block_id,
 		),
-		_ => simple_modes::next::<RA, _, _, _, _>(
+		_ => simple_modes::next::<F, RA>(
 			&mut factory_state,
 			&client,
 			version,
@@ -140,8 +143,7 @@ where
 		),
 	} {
 		best_hash = block.header().hash();
-		best_block_id = BlockId::<Block>::hash(best_hash);
-		import_block(&client, block);
+		import_block::<F>(&client, block);
 
 		info!("Imported block at {}", factory_state.block_no());
 	}
@@ -150,18 +152,16 @@ where
 }
 
 /// Create a baked block from a transfer extrinsic and timestamp inherent.
-pub fn create_block<RA, Backend, Exec, Block, RtApi>(
-	client: &Arc<Client<Backend, Exec, Block, RtApi>>,
+pub fn create_block<F, RA>(
+	client: &Arc<ComponentClient<FullComponents<F>>>,
 	transfer: <RA::Block as BlockT>::Extrinsic,
-	inherent_extrinsics: Vec<<Block as BlockT>::Extrinsic>,
-) -> Block
+	inherent_extrinsics: Vec<<F::Block as BlockT>::Extrinsic>,
+) -> <F as ServiceFactory>::Block
 where
-	Block: BlockT<Hash = <Blake2Hasher as Hasher>::Out>,
-	Exec: client::CallExecutor<Block, Blake2Hasher> + Send + Sync + Clone,
-	Backend: client::backend::Backend<Block, Blake2Hasher> + Send,
-	Client<Backend, Exec, Block, RtApi>: ProvideRuntimeApi,
-	RtApi: ConstructRuntimeApi<Block, Client<Backend, Exec, Block, RtApi>> + Send + Sync,
-	<Client<Backend, Exec, Block, RtApi> as ProvideRuntimeApi>::Api: BlockBuilder<Block>,
+	F: ServiceFactory,
+	FullClient<F>: ProvideRuntimeApi,
+	F::RuntimeApi: ConstructRuntimeApi<FactoryBlock<F>, FullClient<F>>,
+	<FullClient<F> as ProvideRuntimeApi>::Api: BlockBuilder<FactoryBlock<F>>,
 	RA: RuntimeAdapter,
 {
 	let mut block = client.new_block(Default::default()).expect("Failed to create new block");
@@ -177,13 +177,10 @@ where
 	block.bake().expect("Failed to bake block")
 }
 
-fn import_block<Backend, Exec, Block, RtApi>(
-	client: &Arc<Client<Backend, Exec, Block, RtApi>>,
-	block: Block
-) -> () where 
-	Block: BlockT<Hash = <Blake2Hasher as Hasher>::Out>,
-	Exec: client::CallExecutor<Block, Blake2Hasher> + Send + Sync + Clone,
-	Backend: client::backend::Backend<Block, Blake2Hasher> + Send,
+fn import_block<F>(
+	client: &Arc<ComponentClient<FullComponents<F>>>,
+	block: <F as ServiceFactory>::Block
+) -> () where F: ServiceFactory
 {
 	let import = BlockImportParams {
 		origin: BlockOrigin::File,

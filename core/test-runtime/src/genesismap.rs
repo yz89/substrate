@@ -25,13 +25,10 @@ use sr_primitives::traits::{Block as BlockT, Hash as HashT, Header as HeaderT};
 
 /// Configuration of a general Substrate test genesis block.
 pub struct GenesisConfig {
-	changes_trie_config: Option<ChangesTrieConfiguration>,
-	authorities: Vec<AuthorityId>,
-	balances: Vec<(AccountId, u64)>,
-	heap_pages_override: Option<u64>,
-	/// Additional storage key pairs that will be added to the genesis map.
-	extra_storage: HashMap<Vec<u8>, Vec<u8>>,
-	child_extra_storage: HashMap<Vec<u8>, HashMap<Vec<u8>, Vec<u8>>>,
+	pub changes_trie_config: Option<ChangesTrieConfiguration>,
+	pub authorities: Vec<AuthorityId>,
+	pub balances: Vec<(AccountId, u64)>,
+	pub heap_pages_override: Option<u64>,
 }
 
 impl GenesisConfig {
@@ -41,8 +38,6 @@ impl GenesisConfig {
 		endowed_accounts: Vec<AccountId>,
 		balance: u64,
 		heap_pages_override: Option<u64>,
-		extra_storage: HashMap<Vec<u8>, Vec<u8>>,
-		child_extra_storage: HashMap<Vec<u8>, HashMap<Vec<u8>, Vec<u8>>>,
 	) -> Self {
 		GenesisConfig {
 			changes_trie_config: match support_changes_trie {
@@ -52,8 +47,6 @@ impl GenesisConfig {
 			authorities: authorities.clone(),
 			balances: endowed_accounts.into_iter().map(|a| (a, balance)).collect(),
 			heap_pages_override,
-			extra_storage,
-			child_extra_storage,
 		}
 	}
 
@@ -77,10 +70,7 @@ impl GenesisConfig {
 			map.insert(well_known_keys::CHANGES_TRIE_CONFIG.to_vec(), changes_trie_config.encode());
 		}
 		map.insert(twox_128(&b"sys:auth"[..])[..].to_vec(), self.authorities.encode());
-		// Finally, add the extra storage entries.
-		map.extend(self.extra_storage.clone().into_iter());
-
-		(map, self.child_extra_storage.clone())
+		(map, Default::default())
 	}
 }
 
@@ -90,14 +80,15 @@ pub fn insert_genesis_block(
 		HashMap<Vec<u8>, HashMap<Vec<u8>, Vec<u8>>>,
 	)
 ) -> primitives::hash::H256 {
+
 	let child_roots = storage.1.iter().map(|(sk, child_map)| {
 		let state_root = <<<crate::Block as BlockT>::Header as HeaderT>::Hashing as HashT>::trie_root(
-			child_map.clone().into_iter().collect(),
+			child_map.clone().into_iter()
 		);
 		(sk.clone(), state_root.encode())
 	});
 	let state_root = <<<crate::Block as BlockT>::Header as HeaderT>::Hashing as HashT>::trie_root(
-		storage.0.clone().into_iter().chain(child_roots).collect()
+		storage.0.clone().into_iter().chain(child_roots)
 	);
 	let block: crate::Block = substrate_client::genesis::construct_genesis_block(state_root);
 	let genesis_hash = block.header.hash();

@@ -16,7 +16,7 @@
 
 //! Client extension for tests.
 
-use client::{self, Client, backend::Finalizer};
+use client::{self, Client};
 use consensus::{
 	BlockImportParams, BlockImport, BlockOrigin, Error as ConsensusError,
 	ForkChoiceStrategy,
@@ -126,7 +126,7 @@ impl<B, E, RA, Block> ClientExt<Block> for Client<B, E, Block, RA>
 		id: BlockId<Block>,
 		justification: Option<Justification>,
 	) -> client::error::Result<()> {
-		Finalizer::finalize_block(self, id, justification, true)
+		self.finalize_block(id, justification, true)
 	}
 
 	fn genesis_hash(&self) -> <Block as BlockT>::Hash {

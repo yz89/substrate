@@ -18,17 +18,11 @@
 
 use std::{error, fmt, cmp::Ord};
 use log::warn;
-use crate::{
-	backend::Backend, OverlayedChanges,
-	changes_trie::{
-		Storage as ChangesTrieStorage, CacheAction as ChangesTrieCacheAction, build_changes_trie,
-	},
-};
+use crate::backend::Backend;
+use crate::changes_trie::{Storage as ChangesTrieStorage, build_changes_trie};
+use crate::{Externalities, OverlayedChanges, ChildStorageKey};
 use hash_db::Hasher;
-use primitives::{
-	offchain, storage::well_known_keys::is_child_storage_key,
-	traits::{BareCryptoStorePtr, Externalities}, child_storage_key::ChildStorageKey,
-};
+use primitives::{offchain, storage::well_known_keys::is_child_storage_key, traits::BareCryptoStorePtr};
 use trie::{MemoryDB, default_child_trie_root};
 use trie::trie_types::Layout;
 
@@ -84,7 +78,7 @@ where
 	/// This differs from `storage_transaction` behavior, because the moment when
 	/// `storage_changes_root` is called matters + we need to remember additional
 	/// data at this moment (block number).
-	changes_trie_transaction: Option<(MemoryDB<H>, H::Out, ChangesTrieCacheAction<H::Out, N>)>,
+	changes_trie_transaction: Option<(MemoryDB<H>, H::Out)>,
 	/// Additional externalities for offchain workers.
 	///
 	/// If None, some methods from the trait might not be supported.
@@ -125,14 +119,14 @@ where
 	}
 
 	/// Get the transaction necessary to update the backend.
-	pub fn transaction(mut self) -> ((B::Transaction, H::Out), Option<crate::ChangesTrieTransaction<H, N>>) {
+	pub fn transaction(mut self) -> ((B::Transaction, H::Out), Option<MemoryDB<H>>) {
 		let _ = self.storage_root();
 
 		let (storage_transaction, changes_trie_transaction) = (
 			self.storage_transaction
 				.expect("storage_transaction always set after calling storage root; qed"),
 			self.changes_trie_transaction
-				.map(|(tx, _, cache)| (tx, cache)),
+				.map(|(tx, _)| tx),
 		);
 
 		(
@@ -174,12 +168,13 @@ where
 }
 
 impl<'a, B, T, H, N, O> Externalities<H> for Ext<'a, H, N, B, T, O>
-where	H: Hasher,
+where
+	H: Hasher,
 	B: 'a + Backend<H>,
 	T: 'a + ChangesTrieStorage<H, N>,
+	O: 'a + offchain::Externalities,
 	H::Out: Ord + 'static,
 	N: crate::changes_trie::BlockNumber,
-	O: 'a + offchain::Externalities,
 {
 	fn storage(&self, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = panic_handler::AbortGuard::force_abort();
@@ -203,24 +198,24 @@ where	H: Hasher,
 		self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL)
 	}
 
-	fn child_storage(&self, storage_key: ChildStorageKey, key: &[u8]) -> Option<Vec<u8>> {
+	fn child_storage(&self, storage_key: ChildStorageKey<H>, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = panic_handler::AbortGuard::force_abort();
 		self.overlay.child_storage(storage_key.as_ref(), key).map(|x| x.map(|x| x.to_vec())).unwrap_or_else(||
 			self.backend.child_storage(storage_key.as_ref(), key).expect(EXT_NOT_ALLOWED_TO_FAIL))
 	}
 
-	fn child_storage_hash(&self, storage_key: ChildStorageKey, key: &[u8]) -> Option<H::Out> {
+	fn child_storage_hash(&self, storage_key: ChildStorageKey<H>, key: &[u8]) -> Option<H::Out> {
 		let _guard = panic_handler::AbortGuard::force_abort();
 		self.overlay.child_storage(storage_key.as_ref(), key).map(|x| x.map(|x| H::hash(x))).unwrap_or_else(||
 			self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL))
 	}
 
-	fn original_child_storage(&self, storage_key: ChildStorageKey, key: &[u8]) -> Option<Vec<u8>> {
+	fn original_child_storage(&self, storage_key: ChildStorageKey<H>, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = panic_handler::AbortGuard::force_abort();
 		self.backend.child_storage(storage_key.as_ref(), key).expect(EXT_NOT_ALLOWED_TO_FAIL)
 	}
 
-	fn original_child_storage_hash(&self, storage_key: ChildStorageKey, key: &[u8]) -> Option<H::Out> {
+	fn original_child_storage_hash(&self, storage_key: ChildStorageKey<H>, key: &[u8]) -> Option<H::Out> {
 		let _guard = panic_handler::AbortGuard::force_abort();
 		self.backend.child_storage_hash(storage_key.as_ref(), key).expect(EXT_NOT_ALLOWED_TO_FAIL)
 	}
@@ -233,7 +228,7 @@ where	H: Hasher,
 		}
 	}
 
-	fn exists_child_storage(&self, storage_key: ChildStorageKey, key: &[u8]) -> bool {
+	fn exists_child_storage(&self, storage_key: ChildStorageKey<H>, key: &[u8]) -> bool {
 		let _guard = panic_handler::AbortGuard::force_abort();
 
 		match self.overlay.child_storage(storage_key.as_ref(), key) {
@@ -253,14 +248,14 @@ where	H: Hasher,
 		self.overlay.set_storage(key, value);
 	}
 
-	fn place_child_storage(&mut self, storage_key: ChildStorageKey, key: Vec<u8>, value: Option<Vec<u8>>) {
+	fn place_child_storage(&mut self, storage_key: ChildStorageKey<H>, key: Vec<u8>, value: Option<Vec<u8>>) {
 		let _guard = panic_handler::AbortGuard::force_abort();
 
 		self.mark_dirty();
 		self.overlay.set_child_storage(storage_key.into_owned(), key, value);
 	}
 
-	fn kill_child_storage(&mut self, storage_key: ChildStorageKey) {
+	fn kill_child_storage(&mut self, storage_key: ChildStorageKey<H>) {
 		let _guard = panic_handler::AbortGuard::force_abort();
 
 		self.mark_dirty();
@@ -284,7 +279,7 @@ where	H: Hasher,
 		});
 	}
 
-	fn clear_child_prefix(&mut self, storage_key: ChildStorageKey, prefix: &[u8]) {
+	fn clear_child_prefix(&mut self, storage_key: ChildStorageKey<H>, prefix: &[u8]) {
 		let _guard = panic_handler::AbortGuard::force_abort();
 
 		self.mark_dirty();
@@ -310,10 +305,10 @@ where	H: Hasher,
 		let child_delta_iter = child_storage_keys.map(|storage_key|
 			(storage_key.clone(), self.overlay.committed.children.get(storage_key)
 				.into_iter()
-				.flat_map(|map| map.iter().map(|(k, v)| (k.clone(), v.value.clone())))
+				.flat_map(|map| map.1.iter().map(|(k, v)| (k.clone(), v.clone())))
 				.chain(self.overlay.prospective.children.get(storage_key)
 					.into_iter()
-					.flat_map(|map| map.iter().map(|(k, v)| (k.clone(), v.value.clone()))))));
+					.flat_map(|map| map.1.iter().map(|(k, v)| (k.clone(), v.clone()))))));
 
 
 		// compute and memoize
@@ -325,7 +320,7 @@ where	H: Hasher,
 		root
 	}
 
-	fn child_storage_root(&mut self, storage_key: ChildStorageKey) -> Vec<u8> {
+	fn child_storage_root(&mut self, storage_key: ChildStorageKey<H>) -> Vec<u8> {
 		let _guard = panic_handler::AbortGuard::force_abort();
 		if self.storage_transaction.is_some() {
 			self
@@ -338,10 +333,10 @@ where	H: Hasher,
 
 			let delta = self.overlay.committed.children.get(storage_key)
 				.into_iter()
-				.flat_map(|map| map.iter().map(|(k, v)| (k.clone(), v.value.clone())))
+				.flat_map(|map| map.1.iter().map(|(k, v)| (k.clone(), v.clone())))
 				.chain(self.overlay.prospective.children.get(storage_key)
 						.into_iter()
-						.flat_map(|map| map.clone().into_iter().map(|(k, v)| (k.clone(), v.value.clone()))));
+						.flat_map(|map| map.1.clone().into_iter()));
 
 			let root = self.backend.child_storage_root(storage_key, delta).0;
 
@@ -360,7 +355,7 @@ where	H: Hasher,
 			self.overlay,
 			parent_hash,
 		)?;
-		Ok(self.changes_trie_transaction.as_ref().map(|(_, root, _)| root.clone()))
+		Ok(self.changes_trie_transaction.as_ref().map(|(_, root)| root.clone()))
 	}
 
 	fn offchain(&mut self) -> Option<&mut dyn offchain::Externalities> {
@@ -370,7 +365,6 @@ where	H: Hasher,
 	fn keystore(&self) -> Option<BareCryptoStorePtr> {
 		self.keystore.clone()
 	}
-
 }
 
 #[cfg(test)]

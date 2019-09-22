@@ -15,7 +15,6 @@ Before you submitting, please check that:
   - Any panickers have a proof or removed.
 - [ ] You bumped the runtime version if there are breaking changes in the **runtime**.
 - [ ] You updated any rustdocs which may have changed
-- [ ] Has the PR altered the external API or interfaces used by Polkadot? Do you have the corresponding Polkadot PR ready?
 
 After you've read this notice feel free to remove it.
 Thank you!

@@ -16,22 +16,13 @@
 
 //! Proof of work consensus for Substrate.
 //!
-//! To use this engine, you can need to have a struct that implements
-//! `PowAlgorithm`. After that, pass an instance of the struct, along
-//! with other necessary client references to `import_queue` to setup
-//! the queue. Use the `start_mine` function for basic CPU mining.
-//!
-//! The auxiliary storage for PoW engine only stores the total difficulty.
-//! For other storage requirements for particular PoW algorithm (such as
-//! the actual difficulty for each particular blocks), you can take a client
-//! reference in your `PowAlgorithm` implementation, and use a separate prefix
-//! for the auxiliary storage. It is also possible to just use the runtime
-//! as the storage, but it is not recommended as it won't work well with light
-//! clients.
+//! To use this engine, you can either implement a standalone `PowAlgorithm`
+//! or use the runtime PoW algorithm engine. The runtime engine requires you
+//! to implement the `PowApi` defined in `substrate-consensus-pow-primitives`.
+//! There is also a helper module in SRML (`srml-pow`) to make the process easier.
 
 use std::sync::Arc;
 use std::thread;
-use std::collections::HashMap;
 use client::{
 	BlockOf, blockchain::{HeaderBackend, ProvideCache},
 	block_builder::api::BlockBuilder as BlockBuilderApi, backend::AuxStore,
@@ -40,7 +31,7 @@ use sr_primitives::Justification;
 use sr_primitives::generic::{BlockId, Digest, DigestItem};
 use sr_primitives::traits::{Block as BlockT, Header as HeaderT, ProvideRuntimeApi};
 use srml_timestamp::{TimestampInherentData, InherentError as TIError};
-use pow_primitives::{Difficulty, Seal, POW_ENGINE_ID};
+use pow_primitives::{PowApi, Difficulty, Seal, POW_ENGINE_ID};
 use primitives::H256;
 use inherents::{InherentDataProviders, InherentData};
 use consensus_common::{
@@ -51,32 +42,13 @@ use consensus_common::import_queue::{BoxBlockImport, BasicQueue, Verifier};
 use codec::{Encode, Decode};
 use log::*;
 
-/// Auxiliary storage prefix for PoW engine.
+/// Auxiliary prefix for PoW engine.
 pub const POW_AUX_PREFIX: [u8; 4] = *b"PoW:";
 
-/// Get the auxiliary storage key used by engine to store total difficulty.
-fn aux_key(hash: &H256) -> Vec<u8> {
-	POW_AUX_PREFIX.iter().chain(&hash[..])
-		.cloned().collect::<Vec<_>>()
-}
-
-/// Auxiliary storage data for PoW.
+/// Auxiliary data for PoW.
 #[derive(Encode, Decode, Clone, Debug, Default)]
 pub struct PowAux {
-	/// Total difficulty.
 	pub total_difficulty: Difficulty,
-}
-
-impl PowAux {
-	/// Read the auxiliary from client.
-	pub fn read<C: AuxStore>(client: &C, hash: &H256) -> Result<Self, String> {
-		let key = aux_key(hash);
-
-		match client.get_aux(&key).map_err(|e| format!("{:?}", e))? {
-			Some(bytes) => PowAux::decode(&mut &bytes[..]).map_err(|e| format!("{:?}", e)),
-			None => Ok(PowAux::default()),
-		}
-	}
 }
 
 /// Algorithm used for proof of work.
@@ -89,7 +61,7 @@ pub trait PowAlgorithm<B: BlockT> {
 		parent: &BlockId<B>,
 		pre_hash: &H256,
 		seal: &Seal,
-		difficulty: Difficulty,
+		difficulty: Difficulty
 	) -> Result<bool, String>;
 	/// Mine a seal that satisfy the given difficulty.
 	fn mine(
@@ -98,8 +70,53 @@ pub trait PowAlgorithm<B: BlockT> {
 		pre_hash: &H256,
 		seed: &H256,
 		difficulty: Difficulty,
-		round: u32,
+		round: u32
 	) -> Result<Option<Seal>, String>;
+}
+
+/// Delegates algorithm selection to Substrate runtime.
+pub struct PowRuntimeAlgorithm<C> {
+	client: Arc<C>,
+}
+
+impl<C> PowRuntimeAlgorithm<C> {
+	/// Create a new runtime algorithm given a client.
+	pub fn new(client: Arc<C>) -> Self {
+		Self { client }
+	}
+}
+
+impl<B: BlockT<Hash=H256>, C> PowAlgorithm<B> for PowRuntimeAlgorithm<C> where
+	C: ProvideRuntimeApi,
+	C::Api: PowApi<B>,
+{
+	fn difficulty(&self, parent: &BlockId<B>) -> Result<Difficulty, String> {
+		self.client.runtime_api().difficulty(parent)
+			.map_err(|e| format!("Fetch difficulty failed: {:?}", e))
+	}
+
+	fn verify(
+		&self,
+		parent: &BlockId<B>,
+		pre_hash: &H256,
+		seal: &Seal,
+		difficulty: Difficulty
+	) -> Result<bool, String> {
+		self.client.runtime_api().verify(parent, pre_hash, seal, difficulty)
+			.map_err(|e| format!("Verify PoW seal failed: {:?}", e))
+	}
+
+	fn mine(
+		&self,
+		parent: &BlockId<B>,
+		pre_hash: &H256,
+		seed: &H256,
+		difficulty: Difficulty,
+		round: u32
+	) -> Result<Option<Seal>, String> {
+		self.client.runtime_api().mine(parent, pre_hash, seed, difficulty, round)
+			.map_err(|e| format!("Mine PoW seal failed: {:?}", e))
+	}
 }
 
 /// A verifier for PoW blocks.
@@ -113,7 +130,7 @@ impl<C, Algorithm> PowVerifier<C, Algorithm> {
 	fn check_header<B: BlockT<Hash=H256>>(
 		&self,
 		mut header: B::Header,
-		parent_block_id: BlockId<B>,
+		block_id: BlockId<B>,
 	) -> Result<(B::Header, Difficulty, DigestItem<H256>), String> where
 		Algorithm: PowAlgorithm<B>,
 	{
@@ -131,10 +148,10 @@ impl<C, Algorithm> PowVerifier<C, Algorithm> {
 		};
 
 		let pre_hash = header.hash();
-		let difficulty = self.algorithm.difficulty(&parent_block_id)?;
+		let difficulty = self.algorithm.difficulty(&block_id)?;
 
 		if !self.algorithm.verify(
-			&parent_block_id,
+			&block_id,
 			&pre_hash,
 			&inner_seal,
 			difficulty,
@@ -201,8 +218,22 @@ impl<B: BlockT<Hash=H256>, C, Algorithm> Verifier<B> for PowVerifier<C, Algorith
 		let best_hash = self.client.info().best_hash;
 		let hash = header.hash();
 		let parent_hash = *header.parent_hash();
-		let best_aux = PowAux::read(self.client.as_ref(), &best_hash)?;
-		let mut aux = PowAux::read(self.client.as_ref(), &parent_hash)?;
+		let parent_aux_key = POW_AUX_PREFIX.iter().chain(&parent_hash[..])
+			.cloned().collect::<Vec<_>>();
+		let best_aux_key = POW_AUX_PREFIX.iter().chain(&best_hash[..])
+			.cloned().collect::<Vec<_>>();
+		let best_aux = match self.client.get_aux(&best_aux_key)
+			.map_err(|e| format!("{:?}", e))?
+		{
+			Some(bytes) => PowAux::decode(&mut &bytes[..]).map_err(|e| format!("{:?}", e))?,
+			None => Default::default(),
+		};
+		let mut aux = match self.client.get_aux(&parent_aux_key)
+			.map_err(|e| format!("{:?}", e))?
+		{
+			Some(bytes) => PowAux::decode(&mut &bytes[..]).map_err(|e| format!("{:?}", e))?,
+			None => Default::default(),
+		};
 
 		let (checked_header, difficulty, seal) = self.check_header::<B>(
 			header,
@@ -223,7 +254,7 @@ impl<B: BlockT<Hash=H256>, C, Algorithm> Verifier<B> for PowVerifier<C, Algorith
 			let (_, inner_body) = block.deconstruct();
 			body = Some(inner_body);
 		}
-		let key = aux_key(&hash);
+		let key = POW_AUX_PREFIX.iter().chain(&hash[..]).cloned().collect::<Vec<_>>();
 		let import_block = BlockImportParams {
 			origin,
 			header: checked_header,
@@ -266,7 +297,7 @@ pub fn import_queue<B, C, Algorithm>(
 	B: BlockT<Hash=H256>,
 	C: ProvideRuntimeApi + HeaderBackend<B> + BlockOf + ProvideCache<B> + AuxStore,
 	C: Send + Sync + AuxStore + 'static,
-	C::Api: BlockBuilderApi<B>,
+	C::Api: BlockBuilderApi<B> + PowApi<B>,
 	Algorithm: PowAlgorithm<B> + Send + Sync + 'static,
 {
 	register_pow_inherent_data_provider(&inherent_data_providers)?;
@@ -286,28 +317,23 @@ pub fn import_queue<B, C, Algorithm>(
 }
 
 /// Start the background mining thread for PoW. Note that because PoW mining
-/// is CPU-intensive, it is not possible to use an async future to define this.
-/// However, it's not recommended to use background threads in the rest of the
+/// is CPU-intensive, it is not possible to use async future to define this.
+/// However, it's not recommended to use background thread in the rest of the
 /// codebase.
-///
-/// `preruntime` is a parameter that allows a custom additional pre-runtime
-/// digest to be inserted for blocks being built. This can encode authorship
-/// information, or just be a graffiti. `round` is for number of rounds the
-/// CPU miner runs each time. This parameter should be tweaked so that each
-/// mining round is within sub-second time.
 pub fn start_mine<B: BlockT<Hash=H256>, C, Algorithm, E>(
 	mut block_import: BoxBlockImport<B>,
 	client: Arc<C>,
 	algorithm: Algorithm,
 	mut env: E,
-	preruntime: Option<Vec<u8>>,
+	preruntime: Vec<u8>,
 	round: u32,
 	inherent_data_providers: inherents::InherentDataProviders,
 ) where
-	C: HeaderBackend<B> + AuxStore + 'static,
+	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi + 'static,
+	C::Api: PowApi<B>,
 	Algorithm: PowAlgorithm<B> + Send + Sync + 'static,
 	E: Environment<B> + Send + Sync + 'static,
-	E::Error: std::fmt::Debug,
+	E::Error: core::fmt::Debug,
 {
 	if let Err(_) = register_pow_inherent_data_provider(&inherent_data_providers) {
 		warn!("Registering inherent data provider for timestamp failed");
@@ -320,7 +346,7 @@ pub fn start_mine<B: BlockT<Hash=H256>, C, Algorithm, E>(
 				client.as_ref(),
 				&algorithm,
 				&mut env,
-				preruntime.as_ref(),
+				&preruntime,
 				round,
 				&inherent_data_providers
 			) {
@@ -341,29 +367,34 @@ fn mine_loop<B: BlockT<Hash=H256>, C, Algorithm, E>(
 	client: &C,
 	algorithm: &Algorithm,
 	env: &mut E,
-	preruntime: Option<&Vec<u8>>,
+	preruntime: &[u8],
 	round: u32,
 	inherent_data_providers: &inherents::InherentDataProviders,
 ) -> Result<(), String> where
 	C: HeaderBackend<B> + AuxStore,
 	Algorithm: PowAlgorithm<B>,
 	E: Environment<B>,
-	E::Error: std::fmt::Debug,
+	E::Error: core::fmt::Debug,
 {
 	'outer: loop {
 		let best_hash = client.info().best_hash;
 		let best_header = client.header(BlockId::Hash(best_hash))
-			.map_err(|e| format!("Fetching best header failed: {:?}", e))?
-			.ok_or("Best header does not exist")?;
-		let mut aux = PowAux::read(client, &best_hash)?;
+			.map_err(|e| format!("Best header does not exist: {:?}", e))?
+			.ok_or("Fetching best header failed")?;
+		let best_aux_key = POW_AUX_PREFIX.iter().chain(&best_hash[..])
+			.cloned().collect::<Vec<_>>();
+		let mut aux = match client.get_aux(&best_aux_key)
+			.map_err(|e| format!("{:?}", e))?
+		{
+			Some(bytes) => PowAux::decode(&mut &bytes[..]).map_err(|e| format!("{:?}", e))?,
+			None => Default::default(),
+		};
 		let mut proposer = env.init(&best_header).map_err(|e| format!("{:?}", e))?;
 
 		let inherent_data = inherent_data_providers
 			.create_inherent_data().map_err(String::from)?;
 		let mut inherent_digest = Digest::default();
-		if let Some(preruntime) = &preruntime {
-			inherent_digest.push(DigestItem::PreRuntime(POW_ENGINE_ID, preruntime.to_vec()));
-		}
+		inherent_digest.push(DigestItem::PreRuntime(POW_ENGINE_ID, preruntime.to_vec()));
 		let block = futures::executor::block_on(proposer.propose(
 			inherent_data,
 			inherent_digest,
@@ -399,7 +430,7 @@ fn mine_loop<B: BlockT<Hash=H256>, C, Algorithm, E>(
 		aux.total_difficulty = aux.total_difficulty.saturating_add(difficulty);
 		let hash = header.hash();
 
-		let key = aux_key(&hash);
+		let key = POW_AUX_PREFIX.iter().chain(&hash[..]).cloned().collect::<Vec<_>>();
 		let import_block = BlockImportParams {
 			origin: BlockOrigin::Own,
 			header,
@@ -411,7 +442,7 @@ fn mine_loop<B: BlockT<Hash=H256>, C, Algorithm, E>(
 			fork_choice: ForkChoiceStrategy::Custom(true),
 		};
 
-		block_import.import_block(import_block, HashMap::default())
+		block_import.import_block(import_block, Default::default())
 			.map_err(|e| format!("Error with block built on {:?}: {:?}", best_hash, e))?;
 	}
 }

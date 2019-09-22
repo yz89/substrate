@@ -14,18 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Substrate RPC implementation.
+//! Substrate RPC interfaces.
 //!
-//! A core implementation of Substrate RPC interfaces.
+//! A collection of RPC methods and subscriptions supported by all substrate clients.
 
 #![warn(missing_docs)]
 
+mod errors;
 mod helpers;
 mod metadata;
+mod subscriptions;
 
-pub use api::Subscriptions;
-pub use self::metadata::Metadata;
+use jsonrpc_core as rpc;
+
+pub use metadata::Metadata;
 pub use rpc::IoHandlerExtension as RpcExtension;
+pub use subscriptions::Subscriptions;
 
 pub mod author;
 pub mod chain;

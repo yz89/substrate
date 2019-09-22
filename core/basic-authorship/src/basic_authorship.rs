@@ -30,10 +30,9 @@ use inherents::InherentData;
 use log::{error, info, debug, trace};
 use primitives::{H256, Blake2Hasher, ExecutionContext};
 use sr_primitives::{
-	traits::{
-		Block as BlockT, Hash as HashT, Header as HeaderT, ProvideRuntimeApi, DigestFor, BlakeTwo256
-	},
+	traits::{Block as BlockT, Hash as HashT, Header as HeaderT, ProvideRuntimeApi, DigestFor, BlakeTwo256},
 	generic::BlockId,
+	ApplyError,
 };
 use transaction_pool::txpool::{self, Pool as TransactionPool};
 use substrate_telemetry::{telemetry, CONSENSUS_INFO};
@@ -171,7 +170,7 @@ impl<Block, B, E, RA, A> Proposer<Block, SubstrateClient<B, E, Block, RA>, A>	wh
 				Ok(()) => {
 					debug!("[{:?}] Pushed to the block.", pending.hash);
 				}
-				Err(error::Error::ApplyExtrinsicFailed(e)) if e.exhausted_resources() => {
+				Err(error::Error::ApplyExtrinsicFailed(ApplyError::FullBlock)) => {
 					if is_first {
 						debug!("[{:?}] Invalid transaction: FullBlock on empty block", pending.hash);
 						unqueue_invalid.push(pending.hash.clone());
@@ -179,7 +178,7 @@ impl<Block, B, E, RA, A> Proposer<Block, SubstrateClient<B, E, Block, RA>, A>	wh
 						skipped += 1;
 						debug!(
 							"Block seems full, but will try {} more transactions before quitting.",
-							MAX_SKIPPED_TRANSACTIONS - skipped,
+							MAX_SKIPPED_TRANSACTIONS - skipped
 						);
 					} else {
 						debug!("Block is full, proceed with proposing.");
@@ -250,7 +249,7 @@ mod tests {
 		let chain_api = transaction_pool::ChainApi::new(client.clone());
 		let txpool = Arc::new(TransactionPool::new(Default::default(), chain_api));
 
-		txpool.submit_at(&BlockId::number(0), vec![extrinsic(0), extrinsic(1)], false).unwrap();
+		txpool.submit_at(&BlockId::number(0), vec![extrinsic(0), extrinsic(1)]).unwrap();
 
 		let mut proposer_factory = ProposerFactory {
 			client: client.clone(),

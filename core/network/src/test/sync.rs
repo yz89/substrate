@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
 
+use client::{backend::Backend, blockchain::HeaderBackend};
 use crate::config::Roles;
 use consensus::BlockOrigin;
 use futures03::TryFutureExt as _;
@@ -35,8 +36,8 @@ fn test_ancestor_search_when_common_is(n: usize) {
 	net.peer(2).push_blocks(100, false);
 
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.canon_equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -155,8 +156,8 @@ fn sync_from_two_peers_works() {
 	net.peer(1).push_blocks(100, false);
 	net.peer(2).push_blocks(100, false);
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 	assert!(!net.peer(0).is_major_syncing());
 }
 
@@ -169,8 +170,8 @@ fn sync_from_two_peers_with_ancestry_search_works() {
 	net.peer(1).push_blocks(100, false);
 	net.peer(2).push_blocks(100, false);
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.canon_equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -184,8 +185,8 @@ fn ancestry_search_works_when_backoff_is_one() {
 	net.peer(2).push_blocks(2, false);
 
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.canon_equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -199,8 +200,8 @@ fn ancestry_search_works_when_ancestor_is_genesis() {
 	net.peer(2).push_blocks(100, false);
 
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.canon_equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -225,8 +226,8 @@ fn sync_long_chain_works() {
 	let mut net = TestNet::new(2);
 	net.peer(1).push_blocks(500, false);
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain()
+		.equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -237,8 +238,8 @@ fn sync_no_common_longer_chain_fails() {
 	net.peer(0).push_blocks(20, true);
 	net.peer(1).push_blocks(20, false);
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(!net.peers()[0].blockchain_canon_equals(peer1));
+	assert!(!net.peer(0).client.as_in_memory_backend().blockchain()
+		.canon_equals_to(net.peer(1).client.as_in_memory_backend().blockchain()));
 }
 
 #[test]
@@ -333,11 +334,11 @@ fn sync_after_fork_works() {
 	net.peer(2).push_blocks(1, false);
 
 	// peer 1 has the best chain
+	let peer1_chain = net.peer(1).client.as_in_memory_backend().blockchain().clone();
 	net.block_until_sync(&mut runtime);
-	let peer1 = &net.peers()[1];
-	assert!(net.peers()[0].blockchain_canon_equals(peer1));
-	(net.peers()[1].blockchain_canon_equals(peer1));
-	(net.peers()[2].blockchain_canon_equals(peer1));
+	assert!(net.peer(0).client.as_in_memory_backend().blockchain().canon_equals_to(&peer1_chain));
+	assert!(net.peer(1).client.as_in_memory_backend().blockchain().canon_equals_to(&peer1_chain));
+	assert!(net.peer(2).client.as_in_memory_backend().blockchain().canon_equals_to(&peer1_chain));
 }
 
 #[test]
@@ -353,8 +354,8 @@ fn syncs_all_forks() {
 
 	net.block_until_sync(&mut runtime);
 	// Check that all peers have all of the blocks.
-	assert_eq!(9, net.peer(0).blocks_count());
-	assert_eq!(9, net.peer(1).blocks_count());
+	assert_eq!(9, net.peer(0).client.as_in_memory_backend().blockchain().blocks_count());
+	assert_eq!(9, net.peer(1).client.as_in_memory_backend().blockchain().blocks_count());
 }
 
 #[test]
@@ -367,11 +368,11 @@ fn own_blocks_are_announced() {
 
 	net.block_until_sync(&mut runtime);
 
-	assert_eq!(net.peer(0).client.info().chain.best_number, 1);
-	assert_eq!(net.peer(1).client.info().chain.best_number, 1);
-	let peer0 = &net.peers()[0];
-	assert!(net.peers()[1].blockchain_canon_equals(peer0));
-	(net.peers()[2].blockchain_canon_equals(peer0));
+	assert_eq!(net.peer(0).client.as_in_memory_backend().blockchain().info().best_number, 1);
+	assert_eq!(net.peer(1).client.as_in_memory_backend().blockchain().info().best_number, 1);
+	let peer0_chain = net.peer(0).client.as_in_memory_backend().blockchain().clone();
+	assert!(net.peer(1).client.as_in_memory_backend().blockchain().canon_equals_to(&peer0_chain));
+	assert!(net.peer(2).client.as_in_memory_backend().blockchain().canon_equals_to(&peer0_chain));
 }
 
 #[test]

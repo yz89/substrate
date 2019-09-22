@@ -34,19 +34,19 @@ impl RuntimePublic for Public {
 	type Signature = Signature;
 
 	fn all(key_type: KeyTypeId) -> crate::Vec<Self> {
-		runtime_io::ed25519_public_keys(key_type)
+		rio::ed25519_public_keys(key_type)
 	}
 
 	fn generate_pair(key_type: KeyTypeId, seed: Option<&str>) -> Self {
-		runtime_io::ed25519_generate(key_type, seed)
+		rio::ed25519_generate(key_type, seed)
 	}
 
 	fn sign<M: AsRef<[u8]>>(&self, key_type: KeyTypeId, msg: &M) -> Option<Self::Signature> {
-		runtime_io::ed25519_sign(key_type, self, msg.as_ref())
+		rio::ed25519_sign(key_type, self, msg)
 	}
 
 	fn verify<M: AsRef<[u8]>>(&self, msg: &M, signature: &Self::Signature) -> bool {
-		runtime_io::ed25519_verify(&signature, msg.as_ref(), self)
+		rio::ed25519_verify(&signature, msg.as_ref(), self)
 	}
 }
 

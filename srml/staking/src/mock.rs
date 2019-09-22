@@ -18,13 +18,13 @@
 
 use std::{collections::HashSet, cell::RefCell};
 use sr_primitives::Perbill;
-use sr_primitives::traits::{IdentityLookup, Convert, OpaqueKeys, OnInitialize, SaturatedConversion};
+use sr_primitives::traits::{IdentityLookup, Convert, OpaqueKeys, OnInitialize};
 use sr_primitives::testing::{Header, UintAuthorityId};
 use sr_staking_primitives::SessionIndex;
 use primitives::{H256, Blake2Hasher};
 use runtime_io;
-use support::{assert_ok, impl_outer_origin, parameter_types, StorageLinkedMap};
-use support::traits::{Currency, Get, FindAuthor};
+use srml_support::{assert_ok, impl_outer_origin, parameter_types, EnumerableStorageMap};
+use srml_support::traits::{Currency, Get, FindAuthor};
 use crate::{
 	EraIndex, GenesisConfig, Module, Trait, StakerStatus, ValidatorPrefs, RewardDestination,
 	Nominators, inflation
@@ -41,7 +41,9 @@ impl Convert<u64, u64> for CurrencyToVoteHandler {
 	fn convert(x: u64) -> u64 { x }
 }
 impl Convert<u128, u64> for CurrencyToVoteHandler {
-	fn convert(x: u128) -> u64 { x.saturated_into() }
+	fn convert(x: u128) -> u64 {
+		x as u64
+	}
 }
 
 thread_local! {
@@ -92,7 +94,7 @@ impl_outer_origin!{
 pub struct Author11;
 impl FindAuthor<u64> for Author11 {
 	fn find_author<'a, I>(_digests: I) -> Option<u64>
-		where I: 'a + IntoIterator<Item=(support::ConsensusEngineId, &'a [u8])>
+		where I: 'a + IntoIterator<Item=(srml_support::ConsensusEngineId, &'a [u8])>
 	{
 		Some(11)
 	}
@@ -391,16 +393,16 @@ pub fn assert_is_stash(acc: u64) {
 pub fn bond_validator(acc: u64, val: u64) {
 	// a = controller
 	// a + 1 = stash
-	let _ = Balances::make_free_balance_be(&(acc + 1), val);
-	assert_ok!(Staking::bond(Origin::signed(acc + 1), acc, val, RewardDestination::Controller));
+	let _ = Balances::make_free_balance_be(&(acc+1), val);
+	assert_ok!(Staking::bond(Origin::signed(acc+1), acc, val, RewardDestination::Controller));
 	assert_ok!(Staking::validate(Origin::signed(acc), ValidatorPrefs::default()));
 }
 
 pub fn bond_nominator(acc: u64, val: u64, target: Vec<u64>) {
 	// a = controller
 	// a + 1 = stash
-	let _ = Balances::make_free_balance_be(&(acc + 1), val);
-	assert_ok!(Staking::bond(Origin::signed(acc + 1), acc, val, RewardDestination::Controller));
+	let _ = Balances::make_free_balance_be(&(acc+1), val);
+	assert_ok!(Staking::bond(Origin::signed(acc+1), acc, val, RewardDestination::Controller));
 	assert_ok!(Staking::nominate(Origin::signed(acc), target));
 }
 
@@ -414,7 +416,7 @@ pub fn start_session(session_index: SessionIndex) {
 	let session_index = session_index + 1;
 	for i in Session::current_index()..session_index {
 		System::set_block_number((i + 1).into());
-		Timestamp::set_timestamp(System::block_number() * 1000);
+		Timestamp::set_timestamp(System::block_number());
 		Session::on_initialize(System::block_number());
 	}
 
@@ -428,7 +430,7 @@ pub fn start_era(era_index: EraIndex) {
 
 pub fn current_total_payout_for_duration(duration: u64) -> u64 {
 	let res = inflation::compute_total_payout(
-		<Module<Test>>::slot_stake() * 2,
+		<Module<Test>>::slot_stake()*2,
 		Balances::total_issuance(),
 		duration,
 	);

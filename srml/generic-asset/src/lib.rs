@@ -324,7 +324,7 @@ impl<AccountId> Into<PermissionVersions<AccountId>> for PermissionLatest<Account
 
 decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		fn deposit_event() = default;
+		fn deposit_event<T>() = default;
 
 		/// Create a new kind of asset.
 		fn create(origin, options: AssetOptions<T::Balance, T::AccountId>) -> Result {
@@ -478,10 +478,15 @@ decl_storage! {
 		config(initial_balance): T::Balance;
 		config(endowed_accounts): Vec<T::AccountId>;
 
-		build(|config: &GenesisConfig<T>| {
+		build(|
+			storage: &mut (sr_primitives::StorageOverlay, sr_primitives::ChildrenStorageOverlay),
+			config: &GenesisConfig<T>| {
 			config.assets.iter().for_each(|asset_id| {
 				config.endowed_accounts.iter().for_each(|account_id| {
-					<FreeBalance<T>>::insert(asset_id, account_id, &config.initial_balance);
+					storage.0.insert(
+						<FreeBalance<T>>::key_for(asset_id, account_id),
+						<T::Balance as codec::Encode>::encode(&config.initial_balance)
+					);
 				});
 			});
 		});

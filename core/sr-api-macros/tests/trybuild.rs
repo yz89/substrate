@@ -1,6 +1,5 @@
 use std::env;
 
-#[rustversion::attr(not(stable), ignore)]
 #[test]
 fn ui() {
 	// As trybuild is using `cargo check`, we don't need the real WASM binaries.

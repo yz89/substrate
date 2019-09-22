@@ -128,8 +128,9 @@ impl<'a, S: 'a + TrieBackendStorage<H>, H: 'a + Hasher> ProvingBackend<'a, S, H>
 		}
 	}
 
-	/// Consume the backend, extracting the gathered proof in lexicographical order by value.
-	pub fn extract_proof(&self) -> Vec<Vec<u8>> {
+	/// Consume the backend, extracting the gathered proof in lexicographical order
+	/// by value.
+	pub fn extract_proof(self) -> Vec<Vec<u8>> {
 		self.proof_recorder
 			.borrow_mut()
 			.drain()
@@ -173,10 +174,6 @@ impl<'a, S, H> Backend<H> for ProvingBackend<'a, S, H>
 		self.backend.for_keys_with_prefix(prefix, f)
 	}
 
-	fn for_key_values_with_prefix<F: FnMut(&[u8], &[u8])>(&self, prefix: &[u8], f: F) {
-		self.backend.for_key_values_with_prefix(prefix, f)
-	}
-
 	fn for_child_keys_with_prefix<F: FnMut(&[u8])>(&self, storage_key: &[u8], prefix: &[u8], f: F) {
 		self.backend.for_child_keys_with_prefix(storage_key, prefix, f)
 	}
@@ -205,6 +202,10 @@ impl<'a, S, H> Backend<H> for ProvingBackend<'a, S, H>
 		H::Out: Ord
 	{
 		self.backend.child_storage_root(storage_key, delta)
+	}
+
+	fn as_trie_backend(&mut self) -> Option<&TrieBackend<Self::TrieBackendStorage, H>> {
+		None
 	}
 }
 
@@ -244,7 +245,8 @@ mod tests {
 	use crate::backend::{InMemory};
 	use crate::trie_backend::tests::test_trie;
 	use super::*;
-	use primitives::{Blake2Hasher, child_storage_key::ChildStorageKey};
+	use primitives::{Blake2Hasher};
+	use crate::ChildStorageKey;
 
 	fn test_proving<'a>(
 		trie_backend: &'a TrieBackend<PrefixedMemoryDB<Blake2Hasher>,Blake2Hasher>,
@@ -309,8 +311,12 @@ mod tests {
 
 	#[test]
 	fn proof_recorded_and_checked_with_child() {
-		let subtrie1 = ChildStorageKey::from_slice(b":child_storage:default:sub1").unwrap();
-		let subtrie2 = ChildStorageKey::from_slice(b":child_storage:default:sub2").unwrap();
+		let subtrie1 = ChildStorageKey::<Blake2Hasher>::from_slice(
+			b":child_storage:default:sub1"
+		).unwrap();
+		let subtrie2 = ChildStorageKey::<Blake2Hasher>::from_slice(
+			b":child_storage:default:sub2"
+		).unwrap();
 		let own1 = subtrie1.into_owned();
 		let own2 = subtrie2.into_owned();
 		let contents = (0..64).map(|i| (None, vec![i], Some(vec![i])))

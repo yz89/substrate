@@ -54,7 +54,6 @@ pub mod crypto;
 
 pub mod u32_trait;
 
-pub mod child_storage_key;
 pub mod ed25519;
 pub mod sr25519;
 pub mod hash;
@@ -89,23 +88,19 @@ pub enum ExecutionContext {
 	Syncing,
 	/// Context used for block construction.
 	BlockConstruction,
-	/// Context used for offchain calls.
-	///
-	/// This allows passing offchain extension and customizing available capabilities.
-	OffchainCall(Option<(Box<dyn offchain::Externalities>, offchain::Capabilities)>),
+	/// Offchain worker context.
+	OffchainWorker(Box<dyn offchain::Externalities>),
+	/// Context used for other calls.
+	Other,
 }
 
 impl ExecutionContext {
-	/// Returns the capabilities of particular context.
-	pub fn capabilities(&self) -> offchain::Capabilities {
+	/// Returns if the keystore should be enabled for the current context.
+	pub fn enable_keystore(&self) -> bool {
 		use ExecutionContext::*;
-
 		match self {
-			Importing | Syncing | BlockConstruction =>
-				offchain::Capabilities::none(),
-			// Enable keystore by default for offchain calls. CC @bkchr
-			OffchainCall(None) => [offchain::Capability::Keystore][..].into(),
-			OffchainCall(Some((_, capabilities))) => *capabilities,
+			Importing | Syncing | BlockConstruction => false,
+			OffchainWorker(_) | Other => true,
 		}
 	}
 }

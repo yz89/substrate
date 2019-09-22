@@ -49,12 +49,12 @@ pub use timestamp;
 
 use rstd::{result, prelude::*};
 use codec::{Encode, Decode};
-use support::{
+use srml_support::{
 	decl_storage, decl_module, Parameter, storage::StorageValue, traits::{Get, FindAuthor},
 	ConsensusEngineId,
 };
+use app_crypto::AppPublic;
 use sr_primitives::{
-	RuntimeAppPublic,
 	traits::{SaturatedConversion, Saturating, Zero, Member, IsMember}, generic::DigestItem,
 };
 use timestamp::OnTimestampSet;
@@ -142,7 +142,7 @@ impl ProvideInherentData for InherentDataProvider {
 
 pub trait Trait: timestamp::Trait {
 	/// The identifier type for an authority.
-	type AuthorityId: Member + Parameter + RuntimeAppPublic + Default;
+	type AuthorityId: Member + Parameter + AppPublic + Default;
 }
 
 decl_storage! {
@@ -155,7 +155,15 @@ decl_storage! {
 	}
 	add_extra_genesis {
 		config(authorities): Vec<T::AuthorityId>;
-		build(|config| Module::<T>::initialize_authorities(&config.authorities))
+		build(|
+			storage: &mut (sr_primitives::StorageOverlay, sr_primitives::ChildrenStorageOverlay),
+			config: &GenesisConfig<T>
+		| {
+			runtime_io::with_storage(
+				storage,
+				|| Module::<T>::initialize_authorities(&config.authorities),
+			);
+		})
 	}
 }
 

@@ -72,8 +72,7 @@ pub fn signed_extra(nonce: Index, extra_fee: Balance) -> SignedExtra {
 		system::CheckEra::from(Era::mortal(256, 0)),
 		system::CheckNonce::from(nonce),
 		system::CheckWeight::new(),
-		balances::TakeFees::from(extra_fee),
-		Default::default(),
+		balances::TakeFees::from(extra_fee)
 	)
 }
 

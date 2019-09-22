@@ -14,17 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
 
-//! A crate that provides means of executing/dispatching calls into the runtime.
+//! Temporary crate for contracts implementations.
 //!
-//! There are a few responsibilities of this crate at the moment:
-//!
-//! - It provides an implementation of a common entrypoint for calling into the runtime, both
-//! wasm and compiled.
-//! - It defines the environment for the wasm execution, namely the host functions that are to be
-//! provided into the wasm runtime module.
-//! - It also provides the required infrastructure for executing the current wasm runtime (specified
-//! by the current value of `:code` in the provided externalities), i.e. interfacing with
-//! wasm engine used, instance cache.
+//! This will be replaced with WASM contracts stored on-chain.
+//! ** NOTE ***
+//! This is entirely deprecated with the idea of a single-module Wasm module for state transition.
+//! The dispatch table should be replaced with the specific functions needed:
+//! - execute_block(bytes)
+//! - init_block(PrevBlock?) -> InProgressBlock
+//! - add_transaction(InProgressBlock) -> InProgressBlock
+//! It is left as is for now as it might be removed before this is ever done.
 
 #![warn(missing_docs)]
 #![recursion_limit="128"]
@@ -43,12 +42,11 @@ pub use wasmi;
 pub use wasm_executor::WasmExecutor;
 pub use native_executor::{with_native_environment, NativeExecutor, NativeExecutionDispatch};
 pub use wasm_runtimes_cache::RuntimesCache;
+pub use state_machine::Externalities;
 pub use runtime_version::{RuntimeVersion, NativeVersion};
 pub use codec::Codec;
 #[doc(hidden)]
-pub use primitives::{Blake2Hasher, traits::Externalities};
-#[doc(hidden)]
-pub use wasm_interface;
+pub use primitives::Blake2Hasher;
 
 /// Provides runtime information.
 pub trait RuntimeInfo {

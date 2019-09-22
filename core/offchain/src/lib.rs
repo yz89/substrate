@@ -43,7 +43,7 @@ use client::runtime_api::ApiExt;
 use futures::future::Future;
 use log::{debug, warn};
 use network::NetworkStateInfo;
-use primitives::{offchain, ExecutionContext};
+use primitives::ExecutionContext;
 use sr_primitives::{generic::BlockId, traits::{self, ProvideRuntimeApi}};
 use transaction_pool::txpool::{Pool, ChainApi};
 
@@ -122,7 +122,7 @@ impl<Client, Storage, Block> OffchainWorkers<
 				debug!("Running offchain workers at {:?}", at);
 				let run = runtime.offchain_worker_with_context(
 					&at,
-					ExecutionContext::OffchainCall(Some((api, offchain::Capabilities::all()))),
+					ExecutionContext::OffchainWorker(api),
 					number,
 				);
 				if let Err(e) =	run {

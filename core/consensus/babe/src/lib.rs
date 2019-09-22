@@ -857,7 +857,8 @@ impl<B, E, Block, RA, PRA, T> Verifier<Block> for BabeVerifier<B, E, Block, RA, 
 				// chain.
 				let new_best = {
 					let (last_best, last_best_number) = {
-						let info = self.client.info().chain;
+						#[allow(deprecated)]
+						let info = self.client.backend().blockchain().info();
 						(info.best_hash, info.best_number)
 					};
 
@@ -1320,7 +1321,8 @@ impl<B, E, Block, I, RA, PRA> BlockImport<Block> for BabeBlockImport<B, E, Block
 
 		// early exit if block already in chain, otherwise the check for
 		// epoch changes will error when trying to re-import an epoch change
-		match self.client.status(BlockId::Hash(hash)) {
+		#[allow(deprecated)]
+		match self.client.backend().blockchain().status(BlockId::Hash(hash)) {
 			Ok(blockchain::BlockStatus::InChain) => return Ok(ImportResult::AlreadyInChain),
 			Ok(blockchain::BlockStatus::Unknown) => {},
 			Err(e) => return Err(ConsensusError::ClientImport(e.to_string()).into()),
@@ -1494,7 +1496,8 @@ pub fn import_queue<B, E, Block: BlockT<Hash=H256>, I, RA, PRA, T>(
 		transaction_pool,
 	};
 
-	let epoch_changes = aux_schema::load_epoch_changes(&*client)?;
+	#[allow(deprecated)]
+	let epoch_changes = aux_schema::load_epoch_changes(&**client.backend())?;
 
 	let block_import = BabeBlockImport::new(
 		client.clone(),

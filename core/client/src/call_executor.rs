@@ -17,18 +17,16 @@
 use std::{sync::Arc, cmp::Ord, panic::UnwindSafe, result, cell::RefCell, rc::Rc};
 use codec::{Encode, Decode};
 use sr_primitives::{
-	generic::BlockId, traits::Block as BlockT, traits::NumberFor,
+	generic::BlockId, traits::Block as BlockT,
 };
 use state_machine::{
-	self, OverlayedChanges, Ext, ExecutionManager, StateMachine, ExecutionStrategy,
-	backend::Backend as _, ChangesTrieTransaction,
+	self, OverlayedChanges, Ext, CodeExecutor, ExecutionManager,
+	ExecutionStrategy, NeverOffchainExt, backend::Backend as _,
 };
 use executor::{RuntimeVersion, RuntimeInfo, NativeVersion};
 use hash_db::Hasher;
-use primitives::{
-	offchain::{self, NeverOffchainExt}, H256, Blake2Hasher, NativeOrEncoded, NeverNativeValue,
-	traits::CodeExecutor,
-};
+use trie::MemoryDB;
+use primitives::{offchain, H256, Blake2Hasher, NativeOrEncoded, NeverNativeValue};
 
 use crate::runtime_api::{ProofRecorder, InitializeBlock};
 use crate::backend;
@@ -113,14 +111,7 @@ where
 		manager: ExecutionManager<F>,
 		native_call: Option<NC>,
 		side_effects_handler: Option<&mut O>,
-	) -> Result<
-		(
-			NativeOrEncoded<R>,
-			(S::Transaction, H::Out),
-			Option<ChangesTrieTransaction<Blake2Hasher, NumberFor<B>>>
-		),
-		error::Error,
-	>;
+	) -> Result<(NativeOrEncoded<R>, (S::Transaction, H::Out), Option<MemoryDB<H>>), error::Error>;
 
 	/// Execute a call to a contract on top of given state, gathering execution proof.
 	///
@@ -206,7 +197,7 @@ where
 	) -> error::Result<Vec<u8>> {
 		let mut changes = OverlayedChanges::default();
 		let state = self.backend.state_at(*id)?;
-		let return_data = StateMachine::new(
+		let return_data = state_machine::new(
 			&state,
 			self.backend.changes_trie_storage(),
 			side_effects_handler,
@@ -279,7 +270,7 @@ where
 					recorder.clone()
 				);
 
-				StateMachine::new(
+				state_machine::new(
 					&backend,
 					self.backend.changes_trie_storage(),
 					side_effects_handler,
@@ -297,7 +288,7 @@ where
 				.map(|(result, _, _)| result)
 				.map_err(Into::into)
 			}
-			None => StateMachine::new(
+			None => state_machine::new(
 				&state,
 				self.backend.changes_trie_storage(),
 				side_effects_handler,
@@ -354,9 +345,9 @@ where
 	) -> error::Result<(
 		NativeOrEncoded<R>,
 		(S::Transaction, <Blake2Hasher as Hasher>::Out),
-		Option<ChangesTrieTransaction<Blake2Hasher, NumberFor<Block>>>,
+		Option<MemoryDB<Blake2Hasher>>,
 	)> {
-		StateMachine::new(
+		state_machine::new(
 			state,
 			self.backend.changes_trie_storage(),
 			side_effects_handler,

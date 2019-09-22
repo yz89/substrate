@@ -386,14 +386,12 @@ impl Misbehavior {
 
 struct PeerInfo<N> {
 	view: View<N>,
-	roles: Roles,
 }
 
 impl<N> PeerInfo<N> {
-	fn new(roles: Roles) -> Self {
+	fn new() -> Self {
 		PeerInfo {
 			view: View::default(),
-			roles,
 		}
 	}
 }
@@ -410,8 +408,8 @@ impl<N> Default for Peers<N> {
 }
 
 impl<N: Ord> Peers<N> {
-	fn new_peer(&mut self, who: PeerId, roles: Roles) {
-		self.inner.insert(who, PeerInfo::new(roles));
+	fn new_peer(&mut self, who: PeerId) {
+		self.inner.insert(who, PeerInfo::new());
 	}
 
 	fn peer_disconnected(&mut self, who: &PeerId) {
@@ -817,12 +815,9 @@ impl<Block: BlockT> Inner<Block> {
 
 		// if the peer is on the same set and ahead of us by a margin bigger
 		// than `CATCH_UP_THRESHOLD` then we should ask it for a catch up
-		// message. we only send catch-up requests to authorities, observers
-		// won't be able to reply since they don't follow the full GRANDPA
-		// protocol and therefore might not have the vote data available.
+		// message.
 		if let (Some(peer), Some(local_view)) = (self.peers.peer(who), &self.local_view) {
-			if peer.roles.is_authority() &&
-				peer.view.set_id == local_view.set_id &&
+			if peer.view.set_id == local_view.set_id &&
 				peer.view.round.0.saturating_sub(CATCH_UP_THRESHOLD) > local_view.round.0
 			{
 				// send catch up request if allowed
@@ -1038,10 +1033,10 @@ impl<Block: BlockT> GossipValidator<Block> {
 }
 
 impl<Block: BlockT> network_gossip::Validator<Block> for GossipValidator<Block> {
-	fn new_peer(&self, context: &mut dyn ValidatorContext<Block>, who: &PeerId, roles: Roles) {
+	fn new_peer(&self, context: &mut dyn ValidatorContext<Block>, who: &PeerId, _roles: Roles) {
 		let packet = {
 			let mut inner = self.inner.write();
-			inner.peers.new_peer(who.clone(), roles);
+			inner.peers.new_peer(who.clone());
 
 			inner.local_view.as_ref().map(|v| {
 				NeighborPacket {
@@ -1329,7 +1324,7 @@ mod tests {
 		assert!(res.unwrap().is_none());
 
 		// connect & disconnect.
-		peers.new_peer(id.clone(), Roles::AUTHORITY);
+		peers.new_peer(id.clone());
 		peers.peer_disconnected(&id);
 
 		let res = peers.update_peer_state(&id, update.clone());
@@ -1365,7 +1360,7 @@ mod tests {
 		let mut peers = Peers::default();
 		let id = PeerId::random();
 
-		peers.new_peer(id.clone(), Roles::AUTHORITY);
+		peers.new_peer(id.clone());
 
 		let mut check_update = move |update: NeighborPacket<_>| {
 			let view = peers.update_peer_state(&id, update.clone()).unwrap().unwrap();
@@ -1385,7 +1380,7 @@ mod tests {
 		let mut peers = Peers::default();
 
 		let id = PeerId::random();
-		peers.new_peer(id.clone(), Roles::AUTHORITY);
+		peers.new_peer(id.clone());
 
 		peers.update_peer_state(&id, NeighborPacket {
 			round: Round(10),
@@ -1586,7 +1581,7 @@ mod tests {
 		// add the peer making the request to the validator,
 		// otherwise it is discarded
 		let mut inner = val.inner.write();
-		inner.peers.new_peer(peer.clone(), Roles::AUTHORITY);
+		inner.peers.new_peer(peer.clone());
 
 		let res = inner.handle_catch_up_request(
 			&peer,
@@ -1637,7 +1632,7 @@ mod tests {
 		// add the peer making the request to the validator,
 		// otherwise it is discarded
 		let peer = PeerId::random();
-		val.inner.write().peers.new_peer(peer.clone(), Roles::AUTHORITY);
+		val.inner.write().peers.new_peer(peer.clone());
 
 		let send_request = |set_id, round| {
 			let mut inner = val.inner.write();
@@ -1717,7 +1712,7 @@ mod tests {
 		// add the peer making the request to the validator,
 		// otherwise it is discarded.
 		let peer = PeerId::random();
-		val.inner.write().peers.new_peer(peer.clone(), Roles::AUTHORITY);
+		val.inner.write().peers.new_peer(peer.clone());
 
 		let import_neighbor_message = |set_id, round| {
 			let (_, _, catch_up_request, _) = val.inner.write().import_neighbor_message(
@@ -1780,7 +1775,7 @@ mod tests {
 		// add the peer making the request to the validator,
 		// otherwise it is discarded.
 		let peer = PeerId::random();
-		val.inner.write().peers.new_peer(peer.clone(), Roles::AUTHORITY);
+		val.inner.write().peers.new_peer(peer.clone());
 
 		// importing a neighbor message from a peer in the same set in a later
 		// round should lead to a catch up request but since they're disabled
@@ -1797,56 +1792,6 @@ mod tests {
 		match catch_up_request {
 			None => {},
 			_ => panic!("expected no catch up message"),
-		}
-	}
-
-	#[test]
-	fn doesnt_send_catch_up_requests_to_non_authorities() {
-		let (val, _) = GossipValidator::<Block>::new(
-			config(),
-			voter_set_state(),
-			true,
-		);
-
-		// the validator starts at set id 1.
-		val.note_set(SetId(1), Vec::new(), |_, _| {});
-
-		// add the peers making the requests to the validator,
-		// otherwise it is discarded.
-		let peer_authority = PeerId::random();
-		let peer_full = PeerId::random();
-
-		val.inner.write().peers.new_peer(peer_authority.clone(), Roles::AUTHORITY);
-		val.inner.write().peers.new_peer(peer_full.clone(), Roles::FULL);
-
-		let import_neighbor_message = |peer| {
-			let (_, _, catch_up_request, _) = val.inner.write().import_neighbor_message(
-				&peer,
-				NeighborPacket {
-					round: Round(42),
-					set_id: SetId(1),
-					commit_finalized_height: 50,
-				},
-			);
-
-			catch_up_request
-		};
-
-		// importing a neighbor message from a peer in the same set in a later
-		// round should lead to a catch up request but since the node is not an
-		// authority we should get `None`.
-		if import_neighbor_message(peer_full).is_some() {
-			panic!("expected no catch up message");
-		}
-
-		// importing the same neighbor message from a peer who is an authority
-		// should lead to a catch up request.
-		match import_neighbor_message(peer_authority) {
-			Some(GossipMessage::CatchUpRequest(request)) => {
-				assert_eq!(request.set_id, SetId(1));
-				assert_eq!(request.round, Round(41));
-			},
-			_ => panic!("expected catch up message"),
 		}
 	}
 }

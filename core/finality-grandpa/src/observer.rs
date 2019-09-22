@@ -301,7 +301,8 @@ where
 				let completed_rounds = self.persistent_data.set_state.read().completed_rounds();
 				let set_state = VoterSetState::Paused { completed_rounds };
 
-				crate::aux_schema::write_voter_set_state(&*self.client, &set_state)?;
+				#[allow(deprecated)]
+				crate::aux_schema::write_voter_set_state(&**self.client.backend(), &set_state)?;
 
 				set_state
 			},
@@ -314,7 +315,8 @@ where
 					(new.canon_hash, new.canon_number),
 				);
 
-				crate::aux_schema::write_voter_set_state(&*self.client, &set_state)?;
+				#[allow(deprecated)]
+				crate::aux_schema::write_voter_set_state(&**self.client.backend(), &set_state)?;
 
 				set_state
 			},

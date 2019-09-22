@@ -17,7 +17,6 @@
 use primitives::crypto::{KeyTypeId, CryptoType, IsWrappedBy, Public};
 #[cfg(feature = "std")]
 use primitives::crypto::Pair;
-use codec::Codec;
 
 /// An application-specific key.
 pub trait AppKey: 'static + Send + Sync + Sized + CryptoType + Clone {
@@ -73,7 +72,7 @@ pub trait AppSignature: AppKey + Eq + PartialEq + MaybeDebugHash {
 /// A runtime interface for a public key.
 pub trait RuntimePublic: Sized {
 	/// The signature that will be generated when signing with the corresponding private key.
-	type Signature: Codec + MaybeDebugHash + Eq + PartialEq + Clone;
+	type Signature;
 
 	/// Returns all public keys for the given key type in the keystore.
 	fn all(key_type: KeyTypeId) -> crate::Vec<Self>;
@@ -96,12 +95,9 @@ pub trait RuntimePublic: Sized {
 }
 
 /// A runtime interface for an application's public key.
-pub trait RuntimeAppPublic: Sized  {
-	/// An identifier for this application-specific key type.
-	const ID: KeyTypeId;
-
+pub trait RuntimeAppPublic: Sized {
 	/// The signature that will be generated when signing with the corresponding private key.
-	type Signature: Codec + MaybeDebugHash + Eq + PartialEq + Clone;
+	type Signature;
 
 	/// Returns all public keys for this application in the keystore.
 	fn all() -> crate::Vec<Self>;

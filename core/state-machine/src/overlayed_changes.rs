@@ -16,8 +16,7 @@
 
 //! The overlayed changes to state.
 
-#[cfg(test)]
-use std::iter::FromIterator;
+#[cfg(test)] use std::iter::FromIterator;
 use std::collections::{HashMap, BTreeSet};
 use codec::Decode;
 use crate::changes_trie::{NO_EXTRINSIC_INDEX, Configuration as ChangesTrieConfig};
@@ -56,7 +55,7 @@ pub struct OverlayedChangeSet {
 	/// Top level storage changes.
 	pub top: HashMap<Vec<u8>, OverlayedValue>,
 	/// Child storage changes.
-	pub children: HashMap<Vec<u8>, HashMap<Vec<u8>, OverlayedValue>>,
+	pub children: HashMap<Vec<u8>, (Option<BTreeSet<u32>>, HashMap<Vec<u8>, Option<Vec<u8>>>)>,
 }
 
 #[cfg(test)]
@@ -118,14 +117,14 @@ impl OverlayedChanges {
 	/// value has been set.
 	pub fn child_storage(&self, storage_key: &[u8], key: &[u8]) -> Option<Option<&[u8]>> {
 		if let Some(map) = self.prospective.children.get(storage_key) {
-			if let Some(val) = map.get(key) {
-				return Some(val.value.as_ref().map(AsRef::as_ref));
+			if let Some(val) = map.1.get(key) {
+				return Some(val.as_ref().map(AsRef::as_ref));
 			}
 		}
 
 		if let Some(map) = self.committed.children.get(storage_key) {
-			if let Some(val) = map.get(key) {
-				return Some(val.value.as_ref().map(AsRef::as_ref));
+			if let Some(val) = map.1.get(key) {
+				return Some(val.as_ref().map(AsRef::as_ref));
 			}
 		}
 
@@ -152,11 +151,10 @@ impl OverlayedChanges {
 	pub(crate) fn set_child_storage(&mut self, storage_key: Vec<u8>, key: Vec<u8>, val: Option<Vec<u8>>) {
 		let extrinsic_index = self.extrinsic_index();
 		let map_entry = self.prospective.children.entry(storage_key).or_default();
-		let entry = map_entry.entry(key).or_default();
-		entry.value = val;
+		map_entry.1.insert(key, val);
 
 		if let Some(extrinsic) = extrinsic_index {
-			entry.extrinsics.get_or_insert_with(Default::default)
+			map_entry.0.get_or_insert_with(Default::default)
 				.insert(extrinsic);
 		}
 	}
@@ -171,28 +169,16 @@ impl OverlayedChanges {
 		let extrinsic_index = self.extrinsic_index();
 		let map_entry = self.prospective.children.entry(storage_key.to_vec()).or_default();
 
-		map_entry.values_mut().for_each(|e| {
-			if let Some(extrinsic) = extrinsic_index {
-				e.extrinsics.get_or_insert_with(Default::default)
-					.insert(extrinsic);
-			}
+		if let Some(extrinsic) = extrinsic_index {
+			map_entry.0.get_or_insert_with(Default::default)
+				.insert(extrinsic);
+		}
 
-			e.value = None;
-		});
+		map_entry.1.values_mut().for_each(|e| *e = None);
 
-		if let Some(committed_map) = self.committed.children.get(storage_key) {
-			for (key, value) in committed_map.iter() {
-				if !map_entry.contains_key(key) {
-					map_entry.insert(key.clone(), OverlayedValue {
-						value: None,
-						extrinsics: extrinsic_index.map(|i| {
-							let mut e = value.extrinsics.clone()
-								.unwrap_or_else(|| BTreeSet::default());
-							e.insert(i);
-							e
-						}),
-					});
-				}
+		if let Some((_, committed_map)) = self.committed.children.get(storage_key) {
+			for (key, _) in committed_map.iter() {
+				map_entry.1.insert(key.clone(), None);
 			}
 		}
 	}
@@ -238,12 +224,12 @@ impl OverlayedChanges {
 		let extrinsic_index = self.extrinsic_index();
 		let map_entry = self.prospective.children.entry(storage_key.to_vec()).or_default();
 
-		for (key, entry) in map_entry.iter_mut() {
+		for (key, entry) in map_entry.1.iter_mut() {
 			if key.starts_with(prefix) {
-				entry.value = None;
+				*entry = None;
 
 				if let Some(extrinsic) = extrinsic_index {
-					entry.extrinsics.get_or_insert_with(Default::default)
+					map_entry.0.get_or_insert_with(Default::default)
 						.insert(extrinsic);
 				}
 			}
@@ -252,13 +238,13 @@ impl OverlayedChanges {
 		if let Some(child_committed) = self.committed.children.get(storage_key) {
 			// Then do the same with keys from commited changes.
 			// NOTE that we are making changes in the prospective change set.
-			for key in child_committed.keys() {
+			for key in child_committed.1.keys() {
 				if key.starts_with(prefix) {
-					let entry = map_entry.entry(key.clone()).or_default();
-					entry.value = None;
+					let entry = map_entry.1.entry(key.clone()).or_default();
+					*entry = None;
 
 					if let Some(extrinsic) = extrinsic_index {
-						entry.extrinsics.get_or_insert_with(Default::default)
+						map_entry.0.get_or_insert_with(Default::default)
 							.insert(extrinsic);
 					}
 				}
@@ -285,16 +271,13 @@ impl OverlayedChanges {
 						.extend(prospective_extrinsics);
 				}
 			}
-			for (storage_key, mut map) in self.prospective.children.drain() {
-				let map_dest = self.committed.children.entry(storage_key).or_default();
-				for (key, val) in map.drain() {
-					let entry = map_dest.entry(key).or_default();
-					entry.value = val.value;
+			for (storage_key, map) in self.prospective.children.drain() {
+				let entry = self.committed.children.entry(storage_key).or_default();
+				entry.1.extend(map.1.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-					if let Some(prospective_extrinsics) = val.extrinsics {
-						entry.extrinsics.get_or_insert_with(Default::default)
-							.extend(prospective_extrinsics);
-					}
+				if let Some(prospective_extrinsics) = map.0 {
+					entry.0.get_or_insert_with(Default::default)
+						.extend(prospective_extrinsics);
 				}
 			}
 		}
@@ -310,8 +293,7 @@ impl OverlayedChanges {
 	){
 		assert!(self.prospective.is_empty());
 		(self.committed.top.into_iter().map(|(k, v)| (k, v.value)),
-			self.committed.children.into_iter()
-				.map(|(sk, v)| (sk, v.into_iter().map(|(k, v)| (k, v.value)))))
+			self.committed.children.into_iter().map(|(sk, v)| (sk, v.1.into_iter())))
 	}
 
 	/// Inserts storage entry responsible for current extrinsic index.
@@ -351,12 +333,12 @@ impl From<Option<Vec<u8>>> for OverlayedValue {
 #[cfg(test)]
 mod tests {
 	use hex_literal::hex;
-	use primitives::{
-		Blake2Hasher, H256, traits::Externalities, storage::well_known_keys::EXTRINSIC_INDEX,
-	};
+	use primitives::{Blake2Hasher, H256};
+	use primitives::storage::well_known_keys::EXTRINSIC_INDEX;
 	use crate::backend::InMemory;
 	use crate::changes_trie::InMemoryStorage as InMemoryChangesTrieStorage;
 	use crate::ext::Ext;
+	use crate::Externalities;
 	use super::*;
 
 	fn strip_extrinsic_index(map: &HashMap<Vec<u8>, OverlayedValue>) -> HashMap<Vec<u8>, OverlayedValue> {
