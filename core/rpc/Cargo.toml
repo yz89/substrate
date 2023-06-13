@@ -34,4 +34,4 @@ futures = "0.1.17"
 sr-io = { path = "../sr-io" }
 test-client = { package = "substrate-test-runtime-client", path = "../test-runtime/client" }
 rustc-hex = "2.0"
-tokio = "0.1.17"
+tokio = "1.18.5"
